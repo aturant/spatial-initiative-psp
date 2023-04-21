@@ -16,7 +16,7 @@ async def parser(
     logger.info(f'Parser no:{id} up!')
 
     def self_status_write():   
-        running_time = (datetime.now() - start_time).total_seconds()
+        running_time = (datetime.now() - config["start_time"]).total_seconds()
         speed = (config["parser_statuser"][id]/running_time)
         logger.info(
             f'{id=} {config["parser_statuser"][id]=}. Speed is: {speed:.3f} it/sec.')
@@ -24,10 +24,10 @@ async def parser(
     while "task_txt_file_reader" not in config:
         await asyncio.sleep(1)
     logger.info(f'Parser no:{id} going!')
-    start_time = datetime.now()
+    
     try:
         while True:
-            speed = 0
+            
             
             line_number, line_item = await config["items_to_parse"].get()
 
@@ -92,7 +92,7 @@ async def db_writer(
         any_status = sorted(any_status, key=lambda x: x[0])
         logger.info(f'Current log is: {any_status}')
 
-    start_time = datetime.now()
+    
     try:  
         while True:
           
@@ -139,6 +139,7 @@ async def txt_file_reader(
             if config['rows_read'] % config["batch_size_db"] == 0:
                 logger.info(f'{config["rows_read"]=}')
                 logger.info(f'{config["rows_written"]=}')
+                logger.info(f'{config["items_to_parse"].qsize()=}')
 
 
     logger.info(
@@ -175,6 +176,7 @@ async def main():
     config["batch_size_db"] = 100000
     config["rows_written"] = 0
     config["parse_errors"] = []
+    config["start_time"] = datetime.now()
 
     config["task_txt_file_reader"] = asyncio.create_task(
         txt_file_reader(path, config), name='task_txt_file_reader')
@@ -192,12 +194,16 @@ async def main():
     config["task_parsers"] = asyncio.gather(*parsers)
     config["task_db_writer"] = asyncio.create_task(db_writer(config), name='db_write')
 
-    await asyncio.gather(config["task_txt_file_reader"],
+    main_task = asyncio.gather(config["task_txt_file_reader"],
                          config["task_parsers"],
-                         config["task_db_writer"])
-    logger.info(f'Done! {config=}')
+                         config["task_db_writer"], return_exceptions = True)
+    main_task_result = await main_task
+    logger.info(f'{main_task_result=}')
+    running_time = (datetime.now() - config["start_time"]).total_seconds()
+    logger.info(f'Done! \n {config=}')
     # db_info.close()
-    logger.info(f'Read: { config["rows_read"]} lines')
+    logger.info(f'Read: { config["rows_read"]} lines, wrote: {config["rows_written"]} in {running_time} sec.' +
+                f'\n {config["rows_written"]/running_time:f.3} items/sec')
 
 
 if __name__ == '__main__':
@@ -208,5 +214,5 @@ if __name__ == '__main__':
     asyncio.set_event_loop(loop)
 
     loop.run_until_complete(main())
-    logger('All done!')
+    logger.info('All done!')
     loop.close()
