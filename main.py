@@ -33,14 +33,15 @@ async def parser(
             _ = psp_line.parse_obj(line_item)
             config["parsed_items"].append(_)
             config["parser_statuser"][id] += 1
-
+            config["items_to_parse"].task_done()
+            
         except asyncio.CancelledError as ce:
             config["batch_size_db"] = 1
             await asyncio.sleep(1)
             break
 
         except Exception as ex:
-            config["items_to_parse"].task_done()
+            
             logger.error(
                 f'Some error,{line_number=} {line_item} {ex=}')
             config["parse_errors"].append(
@@ -48,7 +49,6 @@ async def parser(
             )
 
         finally:
-            config["items_to_parse"].task_done()
             if config["parser_statuser"][id] % config["batch_size_db"] == 0:
                 running_time = (datetime.now() - start_time).total_seconds()
                 speed = (config["parser_statuser"][id]/running_time)
@@ -65,7 +65,16 @@ async def db_writer(
         config: dict):
     logger.info(f'DB writer up!')
 
-    async def write_buffer(buffer):
+    async def write_buffer():
+        buffer = list()
+        while len(config["parsed_items"]):
+            buffer.extend(config["parsed_items"])
+            config["parsed_items"].clear()
+
+        logger.info(
+                    f'Before db write. Buffer size: {len(buffer)}')
+
+
         if len(buffer):
                 # await psp_line.create_list(buffer)
                 # pynocular way
@@ -82,16 +91,7 @@ async def db_writer(
         else:
             return 0
 
-    async def read_buffer():
-        _ = list()
-        while len(config["parsed_items"]):
-            _.extend(config["parsed_items"])
-            config["parsed_items"].clear()
 
-        logger.info(
-                    f'Before db write. Buffer size: {_}')
-        return _
-    
     def status_writer():
         logger.info(
             f'Wrote to db. {config["rows_written"]  = }. In here: {records_written}, {config["rows_read"]  = }')
@@ -105,10 +105,8 @@ async def db_writer(
     while True:
         try:    
             if len(config["parsed_items"]) >= config["batch_size_db"]:
-                buffer = await read_buffer()
 
-
-                records_written = await write_buffer(buffer)
+                records_written = await write_buffer()
 
                 config["rows_written"] += records_written
                 status_writer
@@ -117,11 +115,9 @@ async def db_writer(
             else:
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
-            buffer = await read_buffer()
 
-
-            records_written = await write_buffer(buffer)
-
+            records_written = await write_buffer()
+            logger.info('DB writer going down')
             config["rows_written"] += records_written
             status_writer
 
@@ -169,8 +165,8 @@ async def main():
     config["db_connection_pool"] = AsyncConnectionPool(conninfo)
 
     config["parsed_items"] = []
-    config["no_workers"] = 2
-    config["batch_size_db"] = 50
+    config["no_workers"] = 8
+    config["batch_size_db"] = 200000
     config["rows_written"] = 0
     config["parse_errors"] = []
 
