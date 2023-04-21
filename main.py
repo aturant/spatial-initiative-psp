@@ -15,50 +15,41 @@ async def parser(
         config: dict):
     logger.info(f'Parser no:{id} up!')
 
+    def self_status_write():   
+        running_time = (datetime.now() - start_time).total_seconds()
+        speed = (config["parser_statuser"][id]/running_time)
+        logger.info(
+            f'{id=} {config["parser_statuser"][id]=}. Speed is: {speed:.3f} it/sec.')
+
     while "task_txt_file_reader" not in config:
         await asyncio.sleep(1)
     logger.info(f'Parser no:{id} going!')
     start_time = datetime.now()
-    while True:
-        # while  config["items_to_parse"].empty():
-        #     sleep_time = round(.1 *id, 2)
-        #     logger.info(
-        #         f'Parser no:{id} is going sleep for {sleep_time}. Reader cache: {config["items_to_parse"].qsize()}. It made: {config["parser_statuser"][id]}')
-        #     await asyncio.sleep(sleep_time)
-
-        speed = 0
-        try:
+    try:
+        while True:
+            speed = 0
+            
             line_number, line_item = await config["items_to_parse"].get()
 
             _ = psp_line.parse_obj(line_item)
             config["parsed_items"].append(_)
             config["parser_statuser"][id] += 1
             config["items_to_parse"].task_done()
-            
-        except asyncio.CancelledError as ce:
-            config["batch_size_db"] = 1
-            await asyncio.sleep(1)
-            break
-
-        except Exception as ex:
-            
-            logger.error(
-                f'Some error,{line_number=} {line_item} {ex=}')
-            config["parse_errors"].append(
-                (line_number, ex, line_item)
-            )
-
-        finally:
             if config["parser_statuser"][id] % config["batch_size_db"] == 0:
-                running_time = (datetime.now() - start_time).total_seconds()
-                speed = (config["parser_statuser"][id]/running_time)
-                logger.info(
-                    f'{id=} {config["parser_statuser"][id]=}. Speed is: {speed:.3f} it/sec.')
-
-    logger.warning(
+                self_status_write()
+            
+    except asyncio.CancelledError as ce:
+        logger.warning(
         f'Parser no:{id} is going down. It made {config["parser_statuser"][id]}.')
-    # logger.info(
-    #     f'Parser no:{id} awaken! Reader cache: {len(config["items_to_parse"])}')
+        self_status_write()
+
+    except Exception as ex:
+        
+        logger.error(
+            f'Some error,{line_number=} {line_item} {ex=}')
+        config["parse_errors"].append(
+            (line_number, ex, line_item)
+        )
 
 
 async def db_writer(
@@ -102,8 +93,9 @@ async def db_writer(
         logger.info(f'Current log is: {any_status}')
 
     start_time = datetime.now()
-    while True:
-        try:    
+    try:  
+        while True:
+          
             if len(config["parsed_items"]) >= config["batch_size_db"]:
 
                 records_written = await write_buffer()
@@ -114,12 +106,13 @@ async def db_writer(
 
             else:
                 await asyncio.sleep(1)
-        except asyncio.CancelledError:
+    except asyncio.CancelledError:
 
-            records_written = await write_buffer()
-            logger.info('DB writer going down')
-            config["rows_written"] += records_written
-            status_writer
+        if len(config["parsed_items"]):
+            raise Exception # to powinno byc puste
+        logger.info('DB writer going down')
+        config["rows_written"] += records_written
+        status_writer
 
 
 
@@ -142,18 +135,31 @@ async def txt_file_reader(
             await config["items_to_parse"].put(
                 (config['rows_read'],
                  line_item))
-            if config['rows_read']>=5000:
-                break
+
+            if config['rows_read'] % config["batch_size_db"] == 0:
+                logger.info(f'{config["rows_read"]=}')
+                logger.info(f'{config["rows_written"]=}')
+
 
     logger.info(
         f'file reader finished! Queue state is {config["items_to_parse"].qsize()}')
-
+   
     await config["items_to_parse"].join()
-
     logger.info(
         f'file reader waited for queue to finish. Call to cancel parser tasks.')
+
+
+    config["batch_size_db"] = 1
+    await asyncio.sleep(3)
+    logger.info(f'{config["rows_read"]=}')
+    logger.info(f'{config["rows_written"]=}')
+    #################################################################
     config["task_parsers"].cancel()
     logger.info(f'Parser tasks cancelled')
+    config["task_db_writer"].cancel()
+    logger.info(f'DB writer tasks cancelled')
+    
+
 
 
 async def main():
@@ -166,7 +172,7 @@ async def main():
 
     config["parsed_items"] = []
     config["no_workers"] = 8
-    config["batch_size_db"] = 200000
+    config["batch_size_db"] = 100000
     config["rows_written"] = 0
     config["parse_errors"] = []
 
@@ -202,4 +208,5 @@ if __name__ == '__main__':
     asyncio.set_event_loop(loop)
 
     loop.run_until_complete(main())
+    logger('All done!')
     loop.close()
